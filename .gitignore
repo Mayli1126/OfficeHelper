@@ -25,3 +25,6 @@ storage/json_store/*.json
 dist/
 build/
 *.egg-info/
+
+requirements-dev.txt
+.zcode/
