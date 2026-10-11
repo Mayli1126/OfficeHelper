@@ -1,256 +1,311 @@
-﻿# OfficeMate
+# OfficeMate
 
-声明：本项目基础黑马程序员的rag案例进行改进而来，感谢黑马程序员分享。
-OfficeMate 是一个基于 `Streamlit + LangChain + Chroma + DashScope` 搭建的企业内部制度与流程智能助手。  
-它面向企业日常办公中的高频问题，帮助用户更方便地查询制度说明、梳理流程步骤、提取材料清单，并在回答中展示引用来源，尽量让每一条回答都更清楚、更可追溯。
+OfficeMate 是一个面向企业内部制度与流程的 **RAG 多智能体知识助手**。系统支持多格式文档入库、语义+规则混合路由、查询改写与分解、三通道混合检索（向量+向量+BM25）、Cross-Encoder 精排、Self-RAG 自我验证、LLM-as-Judge 多维评估和反馈闭环，重点解决企业知识问答中"检索不准、回答无依据、来源不可追溯"的问题。
 
-整个项目保持了轻量、易理解的实现方式：
+> 项目最初参考黑马程序员 RAG 案例，当前版本已围绕检索质量、工作流编排、工程安全、可测试性和可部署性进行了重新设计，并引入语义路由、查询分解、多 Embedding 融合、动态切分、LangGraph 工作流和 LLM-as-Judge 评估。
 
-- 页面层使用 `Streamlit`
-- 知识库检索使用 `LangChain + Chroma`
-- 大模型能力使用 `DashScope`
-- 文档元数据、问答日志、反馈记录使用本地 `JSON` 文件存储
+---
 
-如果你刚接触这类项目，也可以比较顺手地看懂整体结构，并完成本地演示。
+## 系统架构
 
-## 项目定位
+```mermaid
+flowchart LR
+    U[用户问题] --> Q[查询改写 + HyDE]
+    Q --> D{问题复杂？}
+    D -->|是| DE[查询分解]
+    D -->|否| R[混合路由]
+    DE --> R
+    R --> V1[向量检索 v1]
+    R --> V2[向量检索 v2]
+    R --> B[BM25 检索]
+    V1 --> H[RRF 三通道融合]
+    V2 --> H
+    B --> H
+    H --> C[Cross-Encoder 精排]
+    C --> T{相关度门槛}
+    T -->|通过| A[GroundedAnswer]
+    T -->|未通过| N[无依据拒答]
+    A --> S[Self-RAG 自我验证]
+    S --> V[答案结构校验]
+    V --> O[LLM-as-Judge 评估]
+    O --> L[日志与反馈闭环]
+    N --> L
+```
 
-OfficeMate 主要解决企业内部常见的制度与流程查询问题，例如：
+### 核心智能体
 
-- 年假、病假、补卡、调休等 HR 相关制度
-- 差旅、报销、发票、借款冲销等财务制度
-- 采购申请、行政审批、办公用品申请等行政流程
-- 密码重置、VPN 故障、软件安装、设备领用等 IT 支持问题
-- 入职流程、权限开通、通知总结、FAQ 检索等综合办公场景
+| 智能体 | 文件 | 职责 |
+|--------|------|------|
+| `DomainRouterAgent` | `agents/router.py` | 规则路由：关键词匹配 + tie-breaking，零 Token 消耗 |
+| `SemanticRouterAgent` | `agents/semantic_router.py` | 语义路由：Embedding 余弦相似度 + 规则加权融合 |
+| `GroundedAnswerAgent` | `agents/answer_agent.py` | 依据回答：只从编号材料中生成，固定三段式结构 |
+| `SelfRAGRefiner` | `agents/self_rag.py` | 自我验证：模型检查引用依据，标记无依据内容 |
+| `AnswerVerifierAgent` | `agents/verifier.py` | 结构校验：检查章节、引用编号、无依据拒答 |
 
+### 编排方式
 
+- **传统管线**：`OfficeMateChatService._answer_legacy()` — 线性编排，适合单次调用
+- **LangGraph 工作流**：`agents/workflow.py` — StateGraph 状态图，支持条件分支（Self-RAG 不通过→重试）、失败重试、检查点恢复
 
-## 功能介绍
+---
 
-### 1. 智能问答
+## 核心能力
 
-主页面保留了对话式交互体验，用户可以像聊天一样直接输入问题。
+### 1. 混合路由：规则 + 语义
 
-支持的问题类型包括：
+- **规则路由**（`DomainRouterAgent`）：6 个领域 × 专业关键词表，按匹配数量和关键词长度排序，零 Token
+- **语义路由**（`SemanticRouterAgent`）：Embedding 编码问题与领域描述，余弦相似度分类，与规则加权融合（语义 0.6 + 规则 0.4）
+- **LLM fallback**：低置信度时可切换到 LLM 判定
 
-- `制度问答`：例如“年假最晚需要提前几天申请？”
-- `流程指引`：例如“采购一台显示器应该怎么走流程？”
-- `材料清单`：例如“报销差旅费需要提交哪些材料？”
-- `通知总结`：例如“请帮我概括一下这份通知的重点”
+### 2. 查询优化：改写 + HyDE + 分解
 
-回答内容会尽量按照固定结构输出：
+- **查询改写**（`QueryRewriter`）：口语→书面语规范化，生成多角度查询变体
+- **HyDE**（`QueryRewriter.hyde_embed`）：生成假设文档片段，提升向量检索召回率
+- **查询分解**（`QueryDecomposer`）：复杂问题（如"年假怎么请、病假需要什么材料"）拆分为独立子查询，分别检索后合并
 
-- `最终回答`
-- `操作步骤/材料清单`
-- `风险提示`
-- `引用文档`
+### 3. 三通道混合检索 + 两级重排
 
-这样的输出方式比较适合演示，也方便后续写进简历或课程报告中。
+```
+查询 → 向量检索v1(DashScope v4) ──┐
+     → 向量检索v2(BGE) ───────────┼─ RRF 三通道融合 ── Cross-Encoder 精排 ── 相关度门槛
+     → BM25(jieba分词) ───────────┘
+```
 
-### 2. 分类检索
+- **语义分块**（`SemanticChunker`）：标题层级感知，按文档类型自适应切分（fine/coarse/default）
+- **RRF 粗排**：三通道加权融合，可配置各通道权重
+- **Cross-Encoder 精排**（BGE-Reranker）：粗排候选上做语义重排，比 Bi-Encoder 更准确
 
-为了避免知识库内容越来越多后出现“查得太散”的问题，项目支持按知识范围做分类过滤。
+### 4. 有依据回答与主动拒答
 
-当前内置分类包括：
+回答固定包含三段式结构：
+- `### 最终回答` — 结论，关键处标注 `[1]` 引用编号
+- `### 操作步骤/材料清单` — 逐步操作或材料列表
+- `### 风险提示` — 潜在风险和建议
 
-- 员工手册
-- HR 制度
-- 财务制度
-- IT 支持
-- 行政流程
-- 综合公告
+无依据时直接拒答，不调用大模型强行生成。
 
-在聊天页左侧可以切换知识范围。  
-当用户只想询问某一类文档时，可以先选定分类，再发起提问，这样检索结果会更聚焦。
+### 5. Self-RAG 自我验证
 
-### 3. 多格式文档上传
+答案生成后，模型自动检查每个关键结论（数字、时限、审批人）是否有引用依据，对无依据内容添加风险提示。
 
-知识上传页支持将常见办公文档导入知识库，当前支持：
+### 6. LLM-as-Judge 多维评估
 
-- `txt`
-- `pdf`
-- `docx`
-- `xlsx`
-- `csv`
+四维度语义评估（`evaluation/llm_judge.py`）：
 
-上传时可以补充以下信息：
+| 维度 | 权重 | 评估内容 |
+|------|------|---------|
+| Faithfulness | 0.35 | 答案是否严格基于引用，有无幻觉 |
+| Relevance | 0.30 | 答案是否直接回答用户问题 |
+| Format | 0.15 | 三段式结构、引用编号是否正确 |
+| Completeness | 0.20 | 是否遗漏关键信息（金额、时限、审批人） |
 
-- 文档分类
-- 文档版本
-- 自定义标题
-
-这些元数据会一并保存下来，后续在检索和管理页面中都可以看到。
-
-### 4. 示例知识库
-
-为了方便演示，项目自带了一组示例制度文档，覆盖了多个企业内部场景，例如：
-
-- 员工手册
-- 请假与考勤制度
-- 差旅与报销制度
-- 采购申请流程
-- IT 服务台常见问题
-- 入职与权限开通流程
-
-如果暂时没有自己的企业文档，可以直接点击“一键导入示例文档”来体验完整流程。
-
-### 5. 引用来源展示
-
-回答并不是简单返回一段文本，而是会尽量附带引用来源，帮助用户了解答案来自哪份文档。
-
-引用信息通常会展示：
-
-- 文档标题
-- 文档分类
-- 文档版本
-- 原始文件名
-
-这样做的好处是：
-
-- 方便核对答案是否有依据
-- 降低“模型看起来像对，但其实无依据”的风险
-- 让知识库问答更接近真实办公使用场景
-
-### 6. 无依据时提示
-
-如果系统没有在当前知识库中检索到足够材料，不会强行拼接答案，而是会明确提示“未找到明确依据”。
-
-这部分设计虽然简单，但非常重要，因为它能提醒使用者：
-
-- 当前问题超出了知识库覆盖范围
-- 需要补充上传相关制度文档
-- 在制度依据不充分时，不应直接执行流程
-
-### 7. 本地 JSON 存储
-
-考虑到项目面向入门学习和轻量演示，本项目没有引入数据库，而是使用本地 `JSON` 文件进行记录。
-
-主要包括：
-
-- `documents.json`：文档元数据
-- `qa_logs.json`：问答日志
-- `feedback_logs.json`：用户反馈
-
-这样做的优点是：
-
-- 不需要额外学习数据库
-- 项目结构更清晰
-- 本地运行和演示更方便
-
-### 8. 知识管理页
-
-知识管理页集中展示知识库运行情况，适合在答辩或项目介绍时展示“管理闭环”。
-
-页面中可以查看：
-
-- 当前文档数量
-- 已覆盖分类数量
-- 最近问答记录
-- 用户反馈数量
-- 文档列表与导入状态
-- 删除已上传知识，并同步移除原始文件与向量索引
-
-它虽然不是复杂后台，但已经能够体现一个完整 AI 应用的基础管理能力，也方便及时清理导错或过期的知识文档。
-
-### 9. 用户反馈记录
-
-在聊天页中，用户可以对回答进行简单反馈，例如：
-
-- 有帮助
-- 需改进
-
-反馈会被记录下来，并在知识管理页中汇总显示。  
-
-## 页面说明
-
-
-### 1. 智能问答页
-![智能问答页](./1.png)
-这张页面图展示的是 OfficeMate 的核心对话界面。
-
-页面特点包括：
-
-- 左侧提供知识范围筛选
-- 显示当前会话 ID，方便区分不同对话
-- 内置推荐问题，便于快速演示
-- 中间区域展示完整问答记录
-- 回答内容按“最终回答 / 操作步骤或材料清单 / 风险提示”结构输出
-
-
-### 2. 知识上传页
-![知识上传页](./2.png)
-这张页面图展示的是文档导入与知识库更新界面。
-
-页面中可以完成：
-
-- 选择文档分类
-- 填写版本信息
-- 补充自定义标题
-- 上传本地文件
-- 一键导入示例文档
-- 查看最近导入文档列表
-
-
-### 3. 知识管理页
-![知识管理页](./3.png)
-这张页面图展示的是项目的轻量管理后台。
-
-页面主要用于查看：
-
-- 文档数量、分类数量、问答数量、反馈数量
-- 当前知识库中的文档列表
-- 最近问答记录
-- 用户反馈记录
-- 删除已上传知识，保持知识库内容可维护
+### 7. 知识全生命周期
+
+- 支持 `txt`、`pdf`、`docx`、`xlsx`、`csv`
+- 文档 SHA-256 去重
+- 文档分类、标题、版本和来源管理
+- 删除文档时同步清理原文件、向量索引和 BM25 索引
+- 文件名安全处理，避免路径穿越
+- 上传内容提示注入扫描，高风险文档阻断入库并保留审计记录
+- 内置 6 类示例制度文档
+
+### 8. 工程可靠性
+
+- 密钥只从环境变量读取，仓库不保存凭证
+- 检索材料被明确视为数据而非指令，入库前拦截常见中英文提示注入模式
+- JSON 元数据采用临时文件 + 原子替换
+- 读改写全过程加锁，避免并发覆盖
+- 检索失败抛出明确业务异常
+- 核心组件支持依赖注入，可离线单元测试
+- Docker 部署配置
+
+---
 
 ## 项目结构
 
 ```text
 OfficeMate/
-├─ app.py                      # 主聊天页入口
-├─ app_qa.py                   # 兼容旧入口，指向聊天页
-├─ app_file_uploader.py        # 兼容旧入口，指向上传页
-├─ pages/                      # Streamlit 多页面
-├─ services/                   # 解析、存储、检索、问答、页面逻辑
-├─ sample_docs/                # 示例制度文档
-├─ storage/                    # 本地 JSON、原始文档、向量库
-├─ config_data.py              # 配置项
-└─ requirements.txt            # 依赖列表
+├─ agents/                    # 智能体实现
+│  ├─ router.py               # 规则路由：DomainRouterAgent（关键词匹配 + tie-breaking）
+│  ├─ semantic_router.py      # 语义路由：SemanticRouterAgent（Embedding + 规则融合）
+│  ├─ answer_agent.py         # 依据回答：GroundedAnswerAgent（三段式结构化输出）
+│  ├─ verifier.py             # 结构校验：AnswerVerifierAgent（章节/引用/拒答检查）
+│  ├─ self_rag.py             # 自我验证：SelfRAGRefiner（引用依据自动检查）
+│  └─ workflow.py             # LangGraph 工作流：状态图编排，支持重试和检查点
+├─ evaluation/                # 评估体系
+│  ├─ evaluate_retrieval.py   # 评估脚本：lexical / hybrid / judge / all 四种模式
+│  ├─ cases.json              # 评测用例：21 条，覆盖 6 个领域 + 拒答场景
+│  └─ llm_judge.py            # LLM-as-Judge：四维度语义评估（忠实度/相关度/格式/完整性）
+├─ pages/                     # Streamlit 多页面入口
+│  ├─ 1_知识上传.py           # 文档上传与管理页面
+│  └─ 2_知识管理.py           # 知识库管理与统计页面
+├─ sample_docs/               # 可直接导入的企业制度样例（6 个文件）
+├─ services/                  # 服务层
+│  ├─ chat_service.py         # 问答编排：OfficeMateChatService（传统管线 + LangGraph 双模式）
+│  ├─ document_service.py     # 文档服务：DocumentService（解析/入库/去重/安全扫描/删除）
+│  ├─ document_parser.py      # 文档解析：支持 txt/pdf/docx/xlsx/csv
+│  ├─ vector_store.py         # 向量存储：OfficeMateVectorStore（三通道 RRF 融合 + Cross-Encoder 精排）
+│  ├─ semantic_chunker.py     # 语义分块：SemanticChunker（标题感知 + 动态策略）
+│  ├─ lexical_index.py        # BM25 索引：BM25LexicalIndex（持久化 JSON，线程安全）
+│  ├─ reranker.py             # 精排器：CrossEncoderReranker（BGE-Reranker）
+│  ├─ query_rewriter.py       # 查询改写：QueryRewriter（规范化 + HyDE）
+│  ├─ query_decomposer.py     # 查询分解：QueryDecomposer（复杂问题拆子查询）
+│  ├─ text_analyzer.py        # 文本分析：jieba 分词 + 停用词表 + n-gram
+│  ├─ content_security.py     # 内容安全：DocumentSecurityScanner（提示注入扫描）
+│  ├─ storage_service.py      # 存储服务：JsonStorageService（原子化 JSON，读写锁）
+│  ├─ ui_pages.py             # UI 页面：Streamlit 聊天/上传/管理页面渲染
+│  └─ exceptions.py           # 异常定义：OfficeMateError / RetrievalError / StorageError
+├─ tests/                     # 离线单元测试（25 条，无需 API Key）
+│  ├─ test_router.py          # 路由测试（4 条）
+│  ├─ test_chat_workflow.py   # 工作流测试（3 条：完整流程/拒答/回退）
+│  ├─ test_content_security.py # 安全测试（3 条：正常/注入/阻断）
+│  ├─ test_lexical_index.py   # BM25 测试（5 条：检索/过滤/IDF/空结果/删除）
+│  ├─ test_vector_scoring.py  # 评分测试（4 条：覆盖度/RRF/距离拒绝）
+│  ├─ test_storage.py         # 存储测试（3 条：增删改/损坏/统计）
+│  └─ test_verifier.py        # 校验测试（3 条：缺章节/拒答/通过）
+├─ app.py                     # 应用入口（Streamlit 主页面）
+├─ app_file_uploader.py       # 上传页面入口
+├─ app_qa.py                  # 问答页面入口
+├─ config_data.py             # 环境驱动配置（30+ 配置项，全部从环境变量读取）
+├─ Dockerfile                 # Docker 镜像定义
+├─ requirements.txt           # 生产依赖
+├─ requirements-dev.txt       # 开发依赖（pytest + ruff）
+└─ pyproject.toml             # 工具配置（pytest / ruff）
 ```
 
-## 运行方式
+---
 
-### 1. 安装依赖
+## 技术栈
+
+- Python 3.12 / 3.10
+- Streamlit（UI）
+- LangChain / LangGraph（编排）
+- ChromaDB（向量存储）
+- DashScope Embedding / Qwen（向量化 + 对话）
+- BGE-Reranker（Cross-Encoder 精排）
+- jieba（中文分词）
+- Pandas、PyPDF、python-docx、openpyxl（文档解析）
+- unittest / pytest、Ruff、Docker
+
+---
+
+## 快速开始
+
+### 1. 创建环境并安装依赖
 
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 2. 配置 DashScope Key
+开发和测试环境：
 
 ```powershell
-$env:DASHSCOPE_API_KEY="your_api_key"
+pip install -r requirements-dev.txt
 ```
 
-### 3. 启动应用
+### 2. 配置密钥
 
-推荐使用主入口：
+参考 `.env.example`，通过系统环境变量提供密钥：
+
+```powershell
+$env:DASHSCOPE_API_KEY="your_new_api_key"
+```
+
+不要将真实密钥写入 `config_data.py`、README 或 Git 提交。
+
+### 3. 启动应用
 
 ```powershell
 streamlit run app.py
 ```
 
-如果你习惯之前的入口文件，也可以继续使用：
+打开知识上传页，点击"一键导入示例文档"，即可体验完整问答流程。
+
+---
+
+## 测试与评估
+
+### 单元测试（离线，无需密钥）
 
 ```powershell
-streamlit run app_qa.py
-streamlit run app_file_uploader.py
+python -m unittest discover -s tests -v
 ```
 
+### 检索评估
 
-## 补充说明
+```powershell
+# BM25 离线评估
+python -m evaluation.evaluate_retrieval --mode lexical
 
-- 当前项目适合本地学习、课程展示和简历项目整理
-- 如果后续需要进一步扩展，可以继续增加权限控制、知识重建、回答评分等功能
-- 对大家有帮助的欢迎star~ 感谢🙇‍
+# 向量 + BM25 + RRF 评估（需要 API Key）
+python -m evaluation.evaluate_retrieval --mode hybrid
+```
 
+### LLM-as-Judge 语义评估（需要 API Key）
+
+```powershell
+# 单独运行语义评估
+python -m evaluation.evaluate_retrieval --mode judge
+
+# 完整评估：检索 + 答案质量
+python -m evaluation.evaluate_retrieval --mode all
+```
+
+### 评估指标
+
+| 模式 | 输出指标 |
+|------|---------|
+| lexical / hybrid | Route accuracy、Hit@K、MRR、Abstention accuracy |
+| judge / all | + Faithfulness、Relevance、Format、Completeness（1-5 分）、Overall（0-1） |
+
+### 当前评估结果
+
+```
+Lexical Retrieval Evaluation (21 cases):
+  Route accuracy  : 100.0%
+  Hit@K           : 100.0%
+  MRR             : 1.000
+  Abstention acc. : 100.0%
+```
+
+---
+
+## Docker 运行
+
+```powershell
+docker build -t officemate .
+docker run --rm -p 8501:8501 -e DASHSCOPE_API_KEY="your_new_api_key" officemate
+```
+
+生产环境需要为 `storage/` 挂载持久卷。
+
+---
+
+## 可用于简历的项目描述
+
+- 设计并实现企业制度 RAG 多智能体助手，构建 **查询改写 → 混合路由 → 查询分解 → 三通道检索 → Cross-Encoder 精排 → Self-RAG → LLM-as-Judge** 的完整闭环工作流
+- 实现 **规则 + Embedding 混合路由**：关键词匹配与语义相似度加权融合，领域路由准确率 100%
+- 实现 **RRF 粗排 + Cross-Encoder 精排** 两级重排架构，Hit@K 100%、MRR 1.000
+- 设计 **标题层级感知的语义切分策略**，按文档类型自适应调整 chunk_size
+- 引入 **LLM 驱动的查询改写、HyDE 和查询分解**，提升口语化查询和复杂问题的召回率
+- 基于 **jieba 分词 + 完整停用词表** 重构 BM25 索引，针对中文制度文档深度优化
+- 实现 **Self-RAG 自我验证** 和 **LLM-as-Judge 四维评估**（忠实度/相关度/格式/完整性），降低幻觉风险
+- 使用 **LangGraph StateGraph** 替代硬编码编排，支持条件分支、失败重试和检查点恢复
+- 支持多 Embedding 融合（DashScope v4 + BGE），三通道 RRF 加权融合
+- 实现带原文片段的可追溯引用和无依据拒答，记录路由置信度、检索得分、校验结果与用户反馈
+- 增加知识库提示注入扫描与阻断审计
+- 完成环境变量密钥管理、原子化本地存储、依赖注入、离线单元测试及 Docker 部署配置
+
+---
+
+## 后续演进
+
+- **PostgreSQL + Redis**：支持多实例部署、会话缓存和可靠并发
+- **JWT / SSO + RBAC**：实现用户、部门和文档级权限
+- **OCR 与表格结构化抽取**：覆盖扫描 PDF 和复杂制度附件
+- **多智能体辩论**：多个回答智能体从不同角度生成答案，由裁判智能体汇总
+- **ReAct 工具调用**：让回答智能体动态调用检索工具，而非接收预构建上下文
+- **CI/CD 与线上评测**：自动执行测试、镜像构建和 RAG 回归评估
+- **领域自适应 Fine-tuning**：针对企业制度文档微调 Embedding 模型和 Cross-Encoder

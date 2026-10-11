@@ -3,8 +3,11 @@ langchain-core==1.2.18
 langchain-community==0.4.1
 langchain-chroma==1.1.0
 langchain-text-splitters==1.1.1
+langchain-huggingface==0.3.1
+langchain-openai==0.3.35
+langgraph==0.2.55
 chromadb==1.5.5
-dashscope==1.25.13
+jieba==0.42.1
 pandas==2.2.3
 openpyxl==3.1.5
 pypdf==6.9.1

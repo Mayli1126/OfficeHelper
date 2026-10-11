@@ -1,17 +1,19 @@
-﻿import hashlib
+import hashlib
 from pathlib import Path
 
 import config_data as config
+from services.content_security import DocumentSecurityScanner
 from services.document_parser import DocumentParser
 from services.storage_service import JsonStorageService
 from services.vector_store import OfficeMateVectorStore
 
 
 class DocumentService:
-    def __init__(self):
-        self.storage = JsonStorageService()
-        self.parser = DocumentParser()
-        self.vector_store = None
+    def __init__(self, storage=None, parser=None, vector_store=None, security_scanner=None):
+        self.storage = storage or JsonStorageService()
+        self.parser = parser or DocumentParser()
+        self.vector_store = vector_store
+        self.security_scanner = security_scanner or DocumentSecurityScanner()
 
     def ingest_uploaded_file(self, uploaded_file, category, version, custom_title=""):
         title = custom_title.strip() or Path(uploaded_file.name).stem
@@ -25,6 +27,11 @@ class DocumentService:
         )
 
     def ingest_bytes(self, file_name, file_bytes, category, title, version, source_label):
+        file_name = Path(file_name).name
+        if not file_bytes:
+            raise ValueError("上传文件不能为空。")
+        if category not in config.DOCUMENT_CATEGORIES:
+            raise ValueError(f"未知文档分类：{category}")
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         existing = self.storage.get_document_by_hash(file_hash)
         if existing and existing.get("status") == "success":
@@ -35,6 +42,34 @@ class DocumentService:
             }
 
         text, file_suffix = self.parser.parse(file_name, file_bytes)
+        security_scan = self.security_scanner.scan(text)
+        if not security_scan.allowed:
+            rejected_payload = {
+                "file_hash": file_hash,
+                "file_name": file_name,
+                "file_type": file_suffix.lstrip("."),
+                "title": title,
+                "category": category,
+                "version": version,
+                "source_label": source_label,
+                "raw_path": "",
+                "text_length": len(text),
+                "chunk_count": 0,
+                "status": "blocked",
+                "error": "检测到潜在提示注入内容，文档未进入知识库。",
+                "security_risk": security_scan.risk_level,
+                "security_findings": list(security_scan.matched_rules),
+            }
+            if existing:
+                record = self.storage.update_document(existing["id"], rejected_payload)
+            else:
+                record = self.storage.add_document(rejected_payload)
+            return {
+                "status": "blocked",
+                "message": f"《{title}》包含潜在提示注入指令，已阻止入库并记录审计结果。",
+                "document": record,
+            }
+
         raw_path = self._save_raw_file(file_hash, file_name, file_bytes)
         record_payload = {
             "file_hash": file_hash,
@@ -49,6 +84,8 @@ class DocumentService:
             "chunk_count": 0,
             "status": "processing",
             "error": "",
+            "security_risk": security_scan.risk_level,
+            "security_findings": [],
         }
 
         if existing:
@@ -157,7 +194,7 @@ class DocumentService:
         return self.storage.list_documents()
 
     def _save_raw_file(self, file_hash, file_name, file_bytes):
-        safe_name = file_name.replace(" ", "_")
+        safe_name = Path(file_name).name.replace(" ", "_")
         raw_path = config.RAW_DOCUMENT_DIR / f"{file_hash[:12]}_{safe_name}"
         raw_path.write_bytes(file_bytes)
         return raw_path

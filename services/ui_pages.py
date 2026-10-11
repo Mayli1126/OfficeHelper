@@ -1,4 +1,3 @@
-﻿import os
 from uuid import uuid4
 
 import pandas as pd
@@ -49,8 +48,15 @@ def render_chat_page():
                     "qa_log_id": answer_result["qa_log_id"],
                     "question_type": answer_result["question_type"],
                     "question": prompt,
+                    "domain": answer_result["domain"],
+                    "search_category": answer_result["search_category"],
                 }
                 st.markdown(assistant_message["content"])
+                st.caption(
+                    f"已路由至 {answer_result['search_category']}，"
+                    f"路由置信度 {answer_result['route_confidence']:.0%}"
+                    f"{'，已触发全库回退' if answer_result['route_fallback'] else ''}"
+                )
                 _render_feedback_form(storage, assistant_message)
                 st.session_state["chat_messages"].append(assistant_message)
             except Exception as exc:
@@ -130,13 +136,27 @@ def render_management_page():
     metric_columns[1].metric("覆盖分类", stats["category_count"])
     metric_columns[2].metric("问答记录", stats["qa_count"])
     metric_columns[3].metric("反馈数量", stats["feedback_count"])
+    st.caption(f"有效反馈中，好评率为 {stats['helpful_rate']:.0%}。")
 
     st.divider()
     st.subheader("文档列表")
     documents = storage.list_documents()
     if documents:
-        document_frame = pd.DataFrame(documents)[
-            ["title", "category", "version", "file_name", "chunk_count", "uploaded_at", "status", "source_label"]
+        document_frame = pd.DataFrame(documents)
+        if "security_risk" not in document_frame:
+            document_frame["security_risk"] = "unknown"
+        document_frame = document_frame[
+            [
+                "title",
+                "category",
+                "version",
+                "file_name",
+                "chunk_count",
+                "uploaded_at",
+                "status",
+                "security_risk",
+                "source_label",
+            ]
         ]
         st.dataframe(document_frame, use_container_width=True, hide_index=True)
     else:
@@ -144,10 +164,7 @@ def render_management_page():
 
     st.subheader("删除已上传知识")
     if documents:
-        document_options = {
-            _build_document_option_label(document): document["id"]
-            for document in documents
-        }
+        document_options = {_build_document_option_label(document): document["id"] for document in documents}
         selected_label = st.selectbox(
             "选择需要删除的文档",
             options=list(document_options.keys()),
@@ -176,8 +193,23 @@ def render_management_page():
     if qa_logs:
         qa_frame = pd.DataFrame(qa_logs)
         qa_frame["source_count"] = qa_frame["source_docs"].apply(len)
+        for column, default in (
+            ("search_category", ""),
+            ("top_relevance_score", 0.0),
+            ("retrieval_strategy", "legacy"),
+        ):
+            if column not in qa_frame:
+                qa_frame[column] = default
         qa_frame = qa_frame[
-            ["created_at", "question_type", "category", "question", "source_count", "session_id"]
+            [
+                "created_at",
+                "question_type",
+                "search_category",
+                "question",
+                "source_count",
+                "top_relevance_score",
+                "retrieval_strategy",
+            ]
         ]
         st.dataframe(qa_frame, use_container_width=True, hide_index=True)
     else:
@@ -206,8 +238,13 @@ def render_management_page():
 
 
 def _render_api_key_notice():
-    if not os.getenv("DASHSCOPE_API_KEY"):
-        st.warning("当前未检测到 DASHSCOPE_API_KEY。页面可以打开，但模型调用和向量化会失败。")
+    if config.llm_provider == "ollama":
+        return  # 本地模型不需要密钥
+    if not config.get_api_key():
+        st.warning(
+            f"当前厂商为 {config.llm_provider}，未检测到对应的 API Key。"
+            "页面可以打开，但模型调用会失败。"
+        )
 
 
 def _init_chat_session(storage):
@@ -271,9 +308,7 @@ def _render_chat_sidebar(storage):
 
         st.divider()
         stats = storage.get_stats()
-        st.caption(
-            f"当前已导入 {stats['document_count']} 份文档，累计记录 {stats['qa_count']} 次问答。"
-        )
+        st.caption(f"当前已导入 {stats['document_count']} 份文档，累计记录 {stats['qa_count']} 次问答。")
 
 
 def _load_messages_from_logs(storage, session_id):

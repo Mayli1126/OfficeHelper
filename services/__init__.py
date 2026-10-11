@@ -1,1 +1,1 @@
-﻿"""OfficeMate shared services."""
+"""OfficeMate shared services."""
