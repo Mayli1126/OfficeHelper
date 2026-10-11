@@ -1,0 +1,10 @@
+.git
+.venv
+.idea
+.vscode
+__pycache__
+*.pyc
+.env
+storage/chroma_db
+storage/raw_documents
+storage/json_store/*.json

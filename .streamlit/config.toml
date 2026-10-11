@@ -1,0 +1,4 @@
+[server]
+# 关闭文件监控器：Streamlit 扫描 torch 模块时会崩溃（已知兼容性问题）
+fileWatcherType = "none"
+runWatcher = false

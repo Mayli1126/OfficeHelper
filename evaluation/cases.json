@@ -1,0 +1,23 @@
+[
+  {"question": "年假最晚需要提前几天申请？", "expected_category": "HR制度", "expected_title": "请假与考勤制度"},
+  {"question": "忘记打卡后多久之内可以补卡？", "expected_category": "HR制度", "expected_title": "请假与考勤制度"},
+  {"question": "病假超过1天需要提交什么证明？", "expected_category": "HR制度", "expected_title": "请假与考勤制度"},
+  {"question": "加班调休应该在多长时间内使用完毕？", "expected_category": "HR制度", "expected_title": "请假与考勤制度"},
+  {"question": "差旅报销需要提交哪些材料？", "expected_category": "财务制度", "expected_title": "差旅与报销制度"},
+  {"question": "一线城市住宿一晚最多报销多少钱？", "expected_category": "财务制度", "expected_title": "差旅与报销制度"},
+  {"question": "差旅报销的时限是多久？", "expected_category": "财务制度", "expected_title": "差旅与报销制度"},
+  {"question": "发票抬头应该怎么填写？", "expected_category": "财务制度", "expected_title": "差旅与报销制度"},
+  {"question": "采购显示器应该怎么走流程？", "expected_category": "行政流程", "expected_title": "采购申请流程"},
+  {"question": "超过5000元采购需要几家比价？", "expected_category": "行政流程", "expected_title": "采购申请流程"},
+  {"question": "采购申请需要哪些必要材料？", "expected_category": "行政流程", "expected_title": "采购申请流程"},
+  {"question": "VPN 连接失败该怎么排查？", "expected_category": "IT支持", "expected_title": "IT服务台常见问题"},
+  {"question": "办公系统密码被锁定找谁处理？", "expected_category": "IT支持", "expected_title": "IT服务台常见问题"},
+  {"question": "电脑蓝屏了应该怎么处理？", "expected_category": "IT支持", "expected_title": "IT服务台常见问题"},
+  {"question": "新员工如何开通办公系统权限？", "expected_category": "综合公告", "expected_title": "入职与权限开通流程"},
+  {"question": "入职当天需要提交哪些材料？", "expected_category": "综合公告", "expected_title": "入职与权限开通流程"},
+  {"question": "入职前HR需要提前几天发起准备流程？", "expected_category": "综合公告", "expected_title": "入职与权限开通流程"},
+  {"question": "试用期结束前多久提交转正申请？", "expected_category": "员工手册", "expected_title": "员工手册（节选）"},
+  {"question": "公司的标准上班时间是什么？", "expected_category": "员工手册", "expected_title": "员工手册（节选）"},
+  {"question": "每月迟到几次会被HR提醒？", "expected_category": "员工手册", "expected_title": "员工手册（节选）"},
+  {"question": "公司的海外办公室宠物政策是什么？", "expected_category": "全部", "expected_title": null}
+]
